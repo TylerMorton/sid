@@ -6,5 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-openai = "0.12.1"
 clap = { version = "4.3.16", features = ["derive"] }
+tokio = {version = "1.29.1", features = ["rt-multi-thread", "macros"] }
 whisper-rs = "0.8.0"

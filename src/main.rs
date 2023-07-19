@@ -1,6 +1,9 @@
+use std::error::Error;
 use std::fs::read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use async_openai::types::{CreateImageRequestArgs, ImageSize, ResponseFormat};
+use async_openai::Client;
 use whisper_rs::{convert_integer_to_float_audio, FullParams, WhisperContext};
 
 use clap::Parser;
@@ -13,12 +16,7 @@ struct Cli {
     file: Option<PathBuf>,
 }
 
-fn main() {
-    let cli = Cli::parse();
-
-    let model_path = cli.model.as_deref().expect("No model supplied");
-    let file_path = cli.file.as_deref().expect("No audio file supplied");
-
+fn stt(model_path: &Path, file_path: &Path) -> Vec<String> {
     let ctx = WhisperContext::new(model_path.to_str().expect("path not valid utf-8"))
         .expect("failed to load model");
     let mut state = ctx.create_state().expect("failed to create state");
@@ -46,6 +44,7 @@ fn main() {
     let num_segments = state
         .full_n_segments()
         .expect("failed to get number of segments");
+    let mut phrase: Vec<String> = Vec::new();
     for i in 0..num_segments {
         let segment = state
             .full_get_segment_text(i)
@@ -57,5 +56,35 @@ fn main() {
             .full_get_segment_t1(i)
             .expect("failte to get segment end timestamp");
         println!("[{} - {}]: {}", start_timestamp, end_timestamp, segment);
+        phrase.push(segment);
     }
+    phrase
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
+
+    let model_path = cli.model.as_deref().expect("No model supplied");
+    let file_path = cli.file.as_deref().expect("No audio file supplied");
+    let text = stt(model_path, file_path);
+    let prompt = text.iter().fold("".to_string(), |acc, x| acc + x);
+
+    let client = Client::new();
+
+    let request = CreateImageRequestArgs::default()
+        .prompt(prompt)
+        .n(1)
+        .response_format(ResponseFormat::Url)
+        .size(ImageSize::S256x256)
+        .user("async-openai")
+        .build()
+        .expect("request error");
+
+    let response = client.images().create(request).await?;
+    let paths = response.save("./data").await?;
+    paths
+        .iter()
+        .for_each(|path| println!("Image file path: {}", path.display()));
+    Ok(())
 }
