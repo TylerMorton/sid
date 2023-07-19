@@ -1,9 +1,12 @@
+use async_openai::types::{CreateImageRequestArgs, ImageSize, ResponseFormat};
+use async_openai::Client;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::{FromSample, Sample};
+use hound::WavWriter;
 use std::error::Error;
 use std::fs::read;
 use std::path::{Path, PathBuf};
-
-use async_openai::types::{CreateImageRequestArgs, ImageSize, ResponseFormat};
-use async_openai::Client;
+use std::sync::{Arc, Mutex};
 use whisper_rs::{convert_integer_to_float_audio, FullParams, WhisperContext};
 
 use clap::Parser;
@@ -61,15 +64,7 @@ fn stt(model_path: &Path, file_path: &Path) -> Vec<String> {
     phrase
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let cli = Cli::parse();
-
-    let model_path = cli.model.as_deref().expect("No model supplied");
-    let file_path = cli.file.as_deref().expect("No audio file supplied");
-    let text = stt(model_path, file_path);
-    let prompt = text.iter().fold("".to_string(), |acc, x| acc + x);
-
+async fn tti(prompt: String) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
 
     let request = CreateImageRequestArgs::default()
@@ -86,5 +81,120 @@ async fn main() -> Result<(), Box<dyn Error>> {
     paths
         .iter()
         .for_each(|path| println!("Image file path: {}", path.display()));
+    Ok(())
+}
+
+fn sample_format(format: cpal::SampleFormat) -> hound::SampleFormat {
+    if format.is_float() {
+        hound::SampleFormat::Float
+    } else {
+        hound::SampleFormat::Int
+    }
+}
+
+fn wav_spec_from_config(config: &cpal::SupportedStreamConfig) -> hound::WavSpec {
+    hound::WavSpec {
+        channels: config.channels() as _,
+        sample_rate: config.sample_rate().0 as _,
+        bits_per_sample: (config.sample_format().sample_size() * 8) as _,
+        sample_format: sample_format(config.sample_format()),
+    }
+}
+
+type WavWriterHandle = Arc<Mutex<Option<WavWriter<std::io::BufWriter<std::fs::File>>>>>;
+
+fn write_input_data<T, U>(input: &[T], writer: &WavWriterHandle)
+where
+    T: Sample,
+    U: Sample + hound::Sample + FromSample<T>,
+{
+    if let Ok(mut guard) = writer.try_lock() {
+        if let Some(writer) = guard.as_mut() {
+            for &sample in input.iter() {
+                let sample: U = U::from_sample(sample);
+                writer.write_sample(sample).ok();
+            }
+        }
+    }
+}
+
+fn recording(
+    writer: Arc<Mutex<Option<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
+    config: cpal::SupportedStreamConfig,
+    device: cpal::Device,
+) -> Result<(), anyhow::Error> {
+    let err_fn = move |err| {
+        eprintln!("an error occurred on stream: {}", err);
+    };
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::I8 => device.build_input_stream(
+            &config.into(),
+            move |data, _: &_| write_input_data::<i8, i8>(data, &writer),
+            err_fn,
+            None,
+        )?,
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            &config.into(),
+            move |data, _: &_| write_input_data::<i16, i16>(data, &writer),
+            err_fn,
+            None,
+        )?,
+        cpal::SampleFormat::I32 => device.build_input_stream(
+            &config.into(),
+            move |data, _: &_| write_input_data::<i32, i32>(data, &writer),
+            err_fn,
+            None,
+        )?,
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &config.into(),
+            move |data, _: &_| write_input_data::<f32, f32>(data, &writer),
+            err_fn,
+            None,
+        )?,
+        sample_format => {
+            return Err(anyhow::Error::msg(format!(
+                "Unsupported sample format '{sample_format}'"
+            )))
+        }
+    };
+    stream.play()?;
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    drop(stream);
+
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let cli = Cli::parse();
+
+    let host = cpal::default_host();
+    let device = host
+        .default_input_device()
+        .expect("failed to find input device");
+    println!(
+        "Input device: {}",
+        device.name().expect("failed to located device name")
+    );
+    let config = device
+        .default_input_config()
+        .expect("failed to get default input config");
+    const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recoded.wav");
+    let spec = wav_spec_from_config(&config);
+    let writer = hound::WavWriter::create(PATH, spec)?;
+    let writer = Arc::new(Mutex::new(Some(writer)));
+    let writer_2: Arc<Mutex<Option<WavWriter<std::io::BufWriter<std::fs::File>>>>> = writer.clone();
+
+    recording(writer_2, config, device)?;
+    writer.lock().unwrap().take().unwrap().finalize()?;
+    println!("Recording {} complete!", PATH);
+
+    // let model_path = cli.model.as_deref().expect("No model supplied");
+    // let file_path = cli.file.as_deref().expect("No audio file supplied");
+    // let text = stt(model_path, file_path);
+    // let prompt = text.iter().fold("".to_string(), |acc, x| acc + x);
+    // comment out if you don't need or else you will get charged!!!
+    // tti(prompt);
     Ok(())
 }
