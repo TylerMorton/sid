@@ -1,27 +1,28 @@
 use async_openai::types::{CreateImageRequestArgs, ImageSize, ResponseFormat};
 use async_openai::Client;
+use clap::Parser;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, Sample};
+use cpal::{FromSample, Sample, SampleFormat};
 use hound::WavWriter;
 use std::error::Error;
+use std::fmt::format;
 use std::fs::read;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use std::process::Command;
+
 use std::sync::{Arc, Mutex};
 use whisper_rs::{convert_integer_to_float_audio, FullParams, WhisperContext};
-
-use clap::Parser;
 
 #[derive(Parser)]
 struct Cli {
     #[arg(short, long)]
     model: Option<PathBuf>,
     #[arg(short, long)]
-    file: Option<PathBuf>,
+    output: Option<PathBuf>,
 }
 
-fn stt(model_path: &Path, file_path: &Path) -> Vec<String> {
-    let ctx = WhisperContext::new(model_path.to_str().expect("path not valid utf-8"))
-        .expect("failed to load model");
+fn stt(model_path: &str, file_path: &String, sample_format: SampleFormat) -> Vec<String> {
+    let ctx = WhisperContext::new(model_path).expect("failed to load model");
     let mut state = ctx.create_state().expect("failed to create state");
 
     let mut params = FullParams::new(whisper_rs::SamplingStrategy::Greedy { best_of: 1 });
@@ -34,12 +35,24 @@ fn stt(model_path: &Path, file_path: &Path) -> Vec<String> {
     params.set_print_timestamps(false);
 
     // let mut file = File::open(path).expect("failure to open file");
-    let audio_data = read(file_path).expect("couldn't read data");
-    let audio_data: Vec<i16> = audio_data
-        .chunks_exact(2)
-        .map(|a| i16::from_ne_bytes([a[0], a[1]]))
-        .collect();
-    let audio_data = convert_integer_to_float_audio(&audio_data);
+    let read_data = read(file_path).expect("couldn't read data");
+    let audio_data: Vec<f32> = match sample_format {
+        SampleFormat::F32 => {
+            let audio_data: Vec<i16> = read_data
+                .chunks_exact(4)
+                .map(|a| i16::from_ne_bytes([a[0], a[2]]))
+                .collect();
+            convert_integer_to_float_audio(&audio_data)
+        }
+        _ => {
+            let audio_data: Vec<i16> = read_data
+                .chunks_exact(2)
+                .map(|a| i16::from_ne_bytes([a[0], a[1]]))
+                .collect();
+
+            convert_integer_to_float_audio(&audio_data)
+        }
+    };
     state
         .full(params, &audio_data[..])
         .expect("failed to run model");
@@ -159,7 +172,7 @@ fn recording(
         }
     };
     stream.play()?;
-    std::thread::sleep(std::time::Duration::from_secs(3));
+    std::thread::sleep(std::time::Duration::from_secs(5));
     drop(stream);
 
     Ok(())
@@ -169,32 +182,66 @@ fn recording(
 async fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
 
+    let model_path = cli
+        .model
+        .as_deref()
+        .expect("Must provide a model. use --help for details.")
+        .to_str()
+        .expect("model path not valid");
+
+    // let output_path = env!("CARGO_MANIFEST_DIR").to_string() + "/" + (match cli.output {
+    //     Some(path) => path.to_str().to_string(.expect("output path not valid"),
+    //     None => "recoded.wav",
+    // });
+
+    let output_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR").to_string(), 
+        match cli.output {
+            Some(path) => String::from(path.to_str().expect("output path not valid")),
+            None => String::from("recoded.wav"),
+        });
     let host = cpal::default_host();
     let device = host
         .default_input_device()
         .expect("failed to find input device");
-    println!(
-        "Input device: {}",
-        device.name().expect("failed to located device name")
-    );
+    let _supported_configs = device
+        .supported_input_configs()
+        .expect("error while querying configs");
     let config = device
         .default_input_config()
         .expect("failed to get default input config");
-    const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recoded.wav");
     let spec = wav_spec_from_config(&config);
-    let writer = hound::WavWriter::create(PATH, spec)?;
+    let writer = hound::WavWriter::create(&output_path, spec)?;
     let writer = Arc::new(Mutex::new(Some(writer)));
     let writer_2: Arc<Mutex<Option<WavWriter<std::io::BufWriter<std::fs::File>>>>> = writer.clone();
 
+    // TODO: This seems to be bad practice. Figure out how to work for all audio types.
+    let sample_format = SampleFormat::I16;
+
+    println!("Recording... What should I draw? - You have 5 seconds to answer.");
     recording(writer_2, config, device)?;
     writer.lock().unwrap().take().unwrap().finalize()?;
-    println!("Recording {} complete!", PATH);
+    println!("Recording {} complete!", &output_path);
 
-    // let model_path = cli.model.as_deref().expect("No model supplied");
-    // let file_path = cli.file.as_deref().expect("No audio file supplied");
-    // let text = stt(model_path, file_path);
-    // let prompt = text.iter().fold("".to_string(), |acc, x| acc + x);
+    let _output = Command::new("ffmpeg")
+        .arg("-i")
+        .arg(&output_path)
+        .arg("-y")
+        .arg("-ar")
+        .arg("16000")
+        .arg("/tmp/rand.wav")
+        .output()
+        .expect("failed to execute process");
+    Command::new("mv")
+        .arg("/tmp/rand.wav")
+        .arg(&output_path)
+        .output()
+        .expect("failed to execute process");
+
+    let text = stt(model_path, &output_path, sample_format);
+    let prompt = text.iter().fold("".to_string(), |acc, x| acc + x);
+    println!("\nprompt: {}", prompt);
+
     // comment out if you don't need or else you will get charged!!!
-    // tti(prompt);
+    // let _ = tti(prompt).await;
     Ok(())
 }
