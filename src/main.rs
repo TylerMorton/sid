@@ -5,7 +5,6 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, Sample, SampleFormat};
 use hound::WavWriter;
 use std::error::Error;
-use std::fmt::format;
 use std::fs::read;
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,6 +16,8 @@ use whisper_rs::{convert_integer_to_float_audio, FullParams, WhisperContext};
 struct Cli {
     #[arg(short, long)]
     model: Option<PathBuf>,
+    #[arg(long)]
+    record_duration: Option<u16>,
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
@@ -135,6 +136,7 @@ fn recording(
     writer: Arc<Mutex<Option<WavWriter<std::io::BufWriter<std::fs::File>>>>>,
     config: cpal::SupportedStreamConfig,
     device: cpal::Device,
+    record_duration: u16,
 ) -> Result<(), anyhow::Error> {
     let err_fn = move |err| {
         eprintln!("an error occurred on stream: {}", err);
@@ -172,7 +174,7 @@ fn recording(
         }
     };
     stream.play()?;
-    std::thread::sleep(std::time::Duration::from_secs(5));
+    std::thread::sleep(std::time::Duration::from_secs(record_duration as u64));
     drop(stream);
 
     Ok(())
@@ -189,16 +191,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .to_str()
         .expect("model path not valid");
 
-    // let output_path = env!("CARGO_MANIFEST_DIR").to_string() + "/" + (match cli.output {
-    //     Some(path) => path.to_str().to_string(.expect("output path not valid"),
-    //     None => "recoded.wav",
-    // });
+    let record_duration = match cli.record_duration {
+        Some(val) => val,
+        None => 5,
+    };
 
     let output_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR").to_string(), 
         match cli.output {
             Some(path) => String::from(path.to_str().expect("output path not valid")),
             None => String::from("recoded.wav"),
         });
+
+
     let host = cpal::default_host();
     let device = host
         .default_input_device()
@@ -217,8 +221,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // TODO: This seems to be bad practice. Figure out how to work for all audio types.
     let sample_format = SampleFormat::I16;
 
-    println!("Recording... What should I draw? - You have 5 seconds to answer.");
-    recording(writer_2, config, device)?;
+    println!("Recording... What should I draw? - You have {} seconds to answer.", record_duration);
+    recording(writer_2, config, device, record_duration)?;
     writer.lock().unwrap().take().unwrap().finalize()?;
     println!("Recording {} complete!", &output_path);
 
