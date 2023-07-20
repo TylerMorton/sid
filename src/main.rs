@@ -246,6 +246,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("\nprompt: {}", prompt);
 
     // comment out if you don't need or else you will get charged!!!
-    // let _ = tti(prompt).await;
+    let _ = tti(prompt).await;
     Ok(())
 }
