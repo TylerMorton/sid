@@ -7,4 +7,9 @@ SID (speech-to-image display) is a simple project to mess around with openAi's A
 </div>
 </div>
 
+
+It's a good idea if you freshly installed rust to run these commands:
+```sudo apt-get install build-essential pkg-config libasound2-dev llvm llvm-dev libclang-dev clang cmake
+
+```
 If having error `Permission denied` try removing recoded.wav from project directory.
