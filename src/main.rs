@@ -1,3 +1,4 @@
+use async_openai::config::OpenAIConfig;
 use async_openai::types::{CreateImageRequestArgs, ImageSize, ResponseFormat};
 use async_openai::Client;
 use clap::Parser;
@@ -35,8 +36,7 @@ fn stt(model_path: &str, file_path: &String, sample_format: SampleFormat) -> Vec
     params.set_print_realtime(false);
     params.set_print_timestamps(false);
 
-    // let mut file = File::open(path).expect("failure to open file");
-    let read_data = read(file_path).expect("couldn't read data");
+    let read_data = read(file_path).expect("failed to read data");
     let audio_data: Vec<f32> = match sample_format {
         SampleFormat::F32 => {
             let audio_data: Vec<i16> = read_data
@@ -80,7 +80,6 @@ fn stt(model_path: &str, file_path: &String, sample_format: SampleFormat) -> Vec
 
 async fn tti(prompt: String) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
-
     let request = CreateImageRequestArgs::default()
         .prompt(prompt)
         .n(1)
@@ -143,30 +142,41 @@ fn recording(
     };
 
     let stream = match config.sample_format() {
-        cpal::SampleFormat::I8 => device.build_input_stream(
+        cpal::SampleFormat::I8 => {
+            println!("i8 format");
+            device.build_input_stream(
             &config.into(),
             move |data, _: &_| write_input_data::<i8, i8>(data, &writer),
             err_fn,
             None,
-        )?,
-        cpal::SampleFormat::I16 => device.build_input_stream(
+        )?},
+        cpal::SampleFormat::I16 => 
+        {
+            println!("i16 format");
+        device.build_input_stream(
             &config.into(),
             move |data, _: &_| write_input_data::<i16, i16>(data, &writer),
             err_fn,
             None,
-        )?,
-        cpal::SampleFormat::I32 => device.build_input_stream(
+        )?
+        },
+        cpal::SampleFormat::I32 => {
+            println!("i32 format");
+            device.build_input_stream(
             &config.into(),
             move |data, _: &_| write_input_data::<i32, i32>(data, &writer),
             err_fn,
             None,
-        )?,
-        cpal::SampleFormat::F32 => device.build_input_stream(
+        )?},
+        cpal::SampleFormat::F32 => {
+            println!("f32 format");
+            device.build_input_stream(
             &config.into(),
             move |data, _: &_| write_input_data::<f32, f32>(data, &writer),
             err_fn,
             None,
-        )?,
+        )?
+    }
         sample_format => {
             return Err(anyhow::Error::msg(format!(
                 "Unsupported sample format '{sample_format}'"
@@ -191,10 +201,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .to_str()
         .expect("model path not valid");
 
-    let record_duration = match cli.record_duration {
-        Some(val) => val,
-        None => 5,
-    };
+    let record_duration = cli.record_duration.unwrap_or(5);
 
     let output_path = format!("{}/{}", env!("CARGO_MANIFEST_DIR").to_string(), 
         match cli.output {
@@ -203,10 +210,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
 
 
+    println!("Output path: {}", output_path);
     let host = cpal::default_host();
     let device = host
         .default_input_device()
         .expect("failed to find input device");
+    println!("{:?}", device.name());
+    println!("{:?}", device.default_input_config());
+    println!("{:?}", device.default_output_config());
     let _supported_configs = device
         .supported_input_configs()
         .expect("error while querying configs");
@@ -234,18 +245,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .arg("16000")
         .arg("/tmp/rand.wav")
         .output()
-        .expect("failed to execute process");
+        .expect("failed to execute process: ffmpeg");
     Command::new("mv")
         .arg("/tmp/rand.wav")
         .arg(&output_path)
         .output()
-        .expect("failed to execute process");
+        .expect("failed to move file");
 
     let text = stt(model_path, &output_path, sample_format);
     let prompt = text.iter().fold("".to_string(), |acc, x| acc + x);
     println!("\nprompt: {}", prompt);
 
     // comment out if you don't need or else you will get charged!!!
-    let _ = tti(prompt).await;
+   let _ = tti(prompt).await;
     Ok(())
 }

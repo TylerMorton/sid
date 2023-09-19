@@ -6,3 +6,5 @@ SID (speech-to-image display) is a simple project to mess around with openAi's A
   <img width="322" height="210" src="https://github.com/TylerMorton/sir/blob/main/docs/images/img-Qpv502nStMATBT9UHeGzWaSG.png">
 </div>
 </div>
+
+If having error `Permission denied` try removing recoded.wav from project directory.
